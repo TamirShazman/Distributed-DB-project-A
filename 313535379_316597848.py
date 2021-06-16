@@ -8,6 +8,8 @@ from collections import OrderedDict
 import ctypes
 
 X = 22
+my_product_test = {1: 52}
+my_product_test.update({i: 48 for i in range(2, 13)})
 
 
 class Connector:
@@ -59,8 +61,8 @@ class Connector:
         :return:
         :close all connection for specific transactionID
         """
-        for s_id in self.conn:
-            self.conn[s_id][0].close()
+        for s_id in self.connect.keys():
+            self.connect[s_id][0].close()
 
 
 class Thread_with_exception(threading.Thread):
@@ -88,20 +90,24 @@ class Thread_with_exception(threading.Thread):
         self.lock_taken = {}
         self.f = '%Y-%m-%d %H:%M:%S'
         # initialize
-        for s_id, p_id, _ in self.order:
-            if s_id not in self.to_commit.keys():
-                self.to_commit[s_id] = {'uInventory': [], 'iInventory': [], 'order': [], 'orderLog': []}
-                self.history[s_id] = []
-                self.lock_taken[s_id] = {p_id: []}
-            self.lock_taken[s_id].update({p_id: []})
+        if order is not None:
+            for s_id, p_id, _ in self.order:
+                if s_id not in self.to_commit.keys():
+                    self.to_commit[s_id] = {'uInventory': [], 'iInventory': [], 'order': [], 'orderLog': []}
+                    self.history[s_id] = []
+                    self.lock_taken[s_id] = {p_id: []}
+                self.lock_taken[s_id].update({p_id: []})
+        else:
+            self.to_commit[X] = {'uInventory': [], 'iInventory': [], 'order': [], 'orderLog': []}
+            self.lock_taken[X] = {i: [] for i in range(13)}
+            self.history[X] = []
 
     def run(self):
         # target function of the thread class
         try:
             num_of_locks = 0
-            # TODO error one row
             # first we acquire read locks check if inventory is enough, if so we acquire write lock
-            while num_of_locks < len(self.order.T[0]):
+            while num_of_locks < len(self.order):
                 for s_id, p_id, quantity in self.order:
                     # check if theres any write lock
                     if self.try_acquire_lock(s_id, p_id, 'read'):
@@ -113,20 +119,20 @@ class Thread_with_exception(threading.Thread):
                         if inventory < quantity:
                             # notify and go back
                             self.my_error = f"out of order ! siteID:{s_id}, pID:{p_id}, wanted amount:{quantity}," \
-                                         f" inventory:{inventory}"
+                                            f" inventory:{inventory}"
                         else:
                             # wait until we update the lock
                             while not (self.try_update_lock(s_id, p_id)):
                                 pass
                             # execute updateInventory
-                            self.update_inventory(s_id, int(p_id), int(inventory - quantity))
+                            self.update_inventory1(s_id, int(p_id), int(inventory - quantity))
                             self.insert_order(s_id, int(p_id), int(quantity))
             # commit all the changes
             self.commit()
             self.release_all_lock()
         except Exception as e:
             # if any Exception occur we want to print why.
-            self.error = str(e)
+            self.my_error = str(e)
         finally:
             # always release lock and rollback all the un-save changes
             if self.my_error is not None or self.timeout:
@@ -255,7 +261,7 @@ class Thread_with_exception(threading.Thread):
         :notice: execute the the query to the right connection, DOSEN'T COMMIT IT
         """
         if self.lock_taken[s_id][p_id][0] != 'write':
-            self.error = "Tried to write with out lock"
+            self.my_error = "Tried to write with out lock"
             raise Exception
             # set right query
             self.to_commit[s_id]['iInventory'].append((p_id, values))
@@ -273,7 +279,7 @@ class Thread_with_exception(threading.Thread):
         :notice: execute the the query to the right connection, DOSEN'T COMMIT IT
         """
         if self.lock_taken[s_id][p_id][0] != 'write':
-            self.error = "Tried to write with out lock"
+            self.my_error = "Tried to write with out lock"
             raise Exception
         # set right query
         self.to_commit[s_id]['order'].append((f'{str(self.transactionID)}', p_id, values))
@@ -282,8 +288,9 @@ class Thread_with_exception(threading.Thread):
                     'ProductsInventory', self.transactionID, p_id, 'insert',
                     f'insert into ProductsOrdered values ({str(self.transactionID)}, {p_id}), {values}'))
 
-    def update_inventory(self, s_id, p_id, quantity):
+    def update_inventory1(self, s_id, p_id, quantity, First_TIme=False):
         """
+        :param First_TIme:
         :param s_id:
         :param p_id:
         :param quantity:
@@ -291,7 +298,7 @@ class Thread_with_exception(threading.Thread):
         notice: execute update query to the right connection, DOSEN'T COMMIT IT
         """
         if self.lock_taken[s_id][p_id][0] != 'write':
-            self.error = "Tried to write with out lock"
+            self.my_error = "Tried to write with out lock"
             raise Exception
         self.to_commit[s_id]['uInventory'].append((quantity, p_id))
         # notify log
@@ -327,7 +334,7 @@ class Thread_with_exception(threading.Thread):
         :return: inventory as int
         """
         if self.lock_taken[s_id][p_id][0] != 'read':
-            self.error = "Tried to read with out lock"
+            self.my_error = "Tried to read with out lock"
             raise Exception
         inventory = self.conn[s_id][1].execute(
             f"select inventory from ProductsInventory where productID = {p_id}").fetchall()
@@ -379,6 +386,13 @@ class Thread_with_exception(threading.Thread):
         if res > 1:
             ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, 0)
             print('Exception raise failure')
+
+    def insert_first_time(self):
+        my_product = [(1, 52)]
+        for i in range(2, 13):
+            my_product.append((i, 48))
+        self.conn[X][1].executemany("insert into ProductsInventory values (?, ?)", my_product)
+        self.conn[X][0].commit()
 
 
 def create_tables():
@@ -457,12 +471,14 @@ def manage_transactions(t):
         # connect all the needed connection for the transaction
         list_conn = {}
         if isinstance(order.T[0], np.int64):
-            list_conn[s_id] = (conn.connect_to(s_id))
+            list_conn[order.T[0]] = (conn.connect_to(order.T[0]))
+            set_order = [[order[0], order[1], order[2]]]
         else:
             for s_id in order.T[0]:
                 list_conn[s_id] = (conn.connect_to(s_id))
+            set_order = order
         # prepare the thread
-        p = Thread_with_exception(transactionID, order, list_conn)
+        p = Thread_with_exception(transactionID, set_order, list_conn)
         p.start()
         # wait t second for the thread
         p.join(t)
@@ -485,19 +501,18 @@ def manage_transactions(t):
 def update_inventory(transcationID):
     connection = Connector()
     f = '%Y-%m-%d %H:%M:%S'
-    conn1 = connection.connect_to(transcationID, X)
+    conn1 = {X: connection.connect_to(X)}
     conn = Thread_with_exception(transcationID, None, conn1)
-    p = Thread_with_exception
     # check if the there a write lock on product 1.
     sql = 'select * from Locks where productID = 1 and locktype = "write"'
-    rows = conn1[1].execute(
+    rows = conn1[X][1].execute(
         "select * from Locks where productID = 1 and locktype = 'write'"). \
         fetchall()
     # If there isn't a lock on product number 1, the table might not been initialized
     if len(rows) == 0:
         try:
             # Try to write this read attempt in log
-            conn1[1].execute(
+            conn1[X][1].execute(
                 f"insert into Log values ('{datetime.datetime.now().strftime(f)}', 'Locks', '{str(transcationID)}'"
                 f", 1, 'read', '{sql}')")
         except pyodbc.DatabaseError as err:
@@ -508,15 +523,12 @@ def update_inventory(transcationID):
             #  else, we need to initiate the productInventory table
             else:
                 # insert product
-                conn.insertInventory(X, 1, 'ProductsInventory', 52)
-                for i in range(2, 13):
-                    conn.insertInventory(X, i, 'ProductsInventory', 48)
-                conn.commit()
+                conn.insert_first_time()
                 # After all the product are initialize we can return
                 return
 
     # The table are already initialized
-    conn1[0].commit()
+    conn1[X][0].commit()
 
     # Looping until locks are free from the other transaction
     num_of_locks = 0
@@ -525,13 +537,14 @@ def update_inventory(transcationID):
             if conn.try_acquire_lock(X, i, 'write'):
                 num_of_locks = num_of_locks + 1
     # After all locks are obtain we can update
-    conn.updateInventory(X, 1, 52)
+    conn.update_inventory1(X, 1, 52)
     for i in range(2, 13):
-        conn.updateInventory(X, i, 48)
+        conn.update_inventory1(X, i, 48)
     conn.commit()
     conn.release_all_lock()
-    conn1.close_connection()
+    del conn, conn1
+    connection.close_connection()
 
 
 if __name__ == '__main__':
-    update_inventory(1000)
+    manage_transactions(60)

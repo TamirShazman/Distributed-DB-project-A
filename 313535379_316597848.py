@@ -18,17 +18,6 @@ class Connector:
 
     def __init__(self):
         # map between db name and categories
-        self.categories_map = {}
-        # hold update inventory as we keep checking if the order is available
-        self.update_inventory = {}
-        # hold exception as we want to know why the the transaction wasn't complete
-        self.out_of_order_tran = {}
-        # holds connection object and cursor for lock transaction for each transactionID
-        self.conn = {}
-        # execute history to commit for each table
-        self.to_commit = {}
-        self.history = {}
-        # build map between db
         cnxn_db = pyodbc.connect(DRIVER='{SQL Server};',
                                  SERVER='technionddscourse.database.windows.net;',
                                  DATABASE="dbteam",
@@ -38,19 +27,20 @@ class Connector:
         cursor_db = cnxn_db.cursor()
         cursor_db.execute(f"SELECT * from CategoriesToSites")
         categories_list = cursor_db.fetchall()
+        self.connect = {}
+        self.categories_map = {}
         for item in categories_list:
             self.categories_map[item[0]] = item[1]
 
-    def connect_to(self, transactionID, s_id):
+    def connect_to(self, s_id):
         """
         :param transactionID:
         :param s_id:
         connect to database for each transaction and s_id
         """
         # Dont open a new connection if not needed
-        if transactionID in self.conn.keys():
-            if s_id in self.conn[transactionID].keys():
-                return
+        if s_id in self.connect.keys():
+            return self.connect[s_id]
         name = self.categories_map[s_id]
         conn = pyodbc.connect(DRIVER='{SQL Server};',
                               SERVER='technionddscourse.database.windows.net;',
@@ -60,31 +50,17 @@ class Connector:
                               autocommit=False,
                               )
         cursor = conn.cursor()
-        # Insert the new connection and cursor into the right dict
-        # update the to_commit
-        if transactionID in self.conn.keys():
-            self.conn[transactionID].update({s_id: (conn, cursor)})
-            self.to_commit[transactionID].update(
-                {s_id: {'uInventory': [], 'iInventory': [], 'order': [], 'orderLog': []}})
-            self.history[transactionID].update({s_id: []})
-        else:
-            self.conn[transactionID] = {s_id: (conn, cursor)}
-            self.to_commit[transactionID] = {s_id: {'uInventory': [], 'iInventory': [], 'order': [], 'orderLog': []}}
-            self.history[transactionID] = {s_id: []}
-            self.out_of_order_tran[transactionID] = []
+        self.connect[s_id] = (conn, cursor)
+        return self.connect[s_id]
 
-    def close_connection(self, transactionID):
+    def close_connection(self):
         """
         :param transactionID:
         :return:
         :close all connection for specific transactionID
         """
-        for s_id in self.conn[transactionID]:
-            self.conn[transactionID][s_id][0].close()
-            if s_id in self.update_inventory.keys():
-                del self.update_inventory[s_id]
-        del self.conn[transactionID], self.history[transactionID], self.to_commit[transactionID],
-        self.out_of_order_tran[transactionID]
+        for s_id in self.conn:
+            self.conn[s_id][0].close()
 
 
 class Thread_with_exception(threading.Thread):
@@ -102,8 +78,6 @@ class Thread_with_exception(threading.Thread):
         self.conn = conn
         # True if time out
         self.timeout = False
-        # hold update inventory as we keep checking if the order is available
-        self.update_inventory = {}
         # hold exception as we want to know why the the transaction wasn't complete
         self.error = None
         # execute history to commit for each table
@@ -115,51 +89,37 @@ class Thread_with_exception(threading.Thread):
         self.f = '%Y-%m-%d %H:%M:%S'
         # initialize
         for s_id, p_id, _ in self.order:
-            self.update_inventory.update({s_id: []})
-            self.to_commit.update({s_id: {'uInventory': [], 'iInventory': [], 'order': [], 'orderLog': []}})
-            self.history.update({s_id: []})
-            self.lock_taken.update({s_id: {p_id: []}})
+            if s_id not in self.to_commit.keys():
+                self.to_commit[s_id] = {'uInventory': [], 'iInventory': [], 'order': [], 'orderLog': []}
+                self.history[s_id] = []
+                self.lock_taken[s_id] = {p_id: []}
+            self.lock_taken[s_id].update({p_id: []})
 
     def run(self):
         # target function of the thread class
         try:
-            num_of_locks = 0
+            c = 0
+            thread_product = []
             # TODO error one row
             # first we acquire read locks check if inventory is enough, if so we acquire write lock
-            while num_of_locks < len(self.order.T[0]):
-                for s_id, p_id, quantity in self.order:
-                    # check if theres any write lock
-                    if self.t_conn.try_acquire_lock(s_id, self.transactionID, p_id, 'read'):
-                        # set num_of_locks
-                        num_of_locks = num_of_locks + 1
-                        # read inventory
-                        inventory = self.t_conn.read_inventory(s_id, self.transactionID, p_id)
-                        # if out of order
-                        if inventory < quantity:
-                            # notify and go back
-                            print("inventory", inventory, "quantity", quantity, p_id, self.transactionID)
-                            self.t_conn.out_of_order_tran[self.transactionID] = "out of order"
-                            return
-                        else:
-                            # wait until we update the lock
-                            while not (self.t_conn.try_update_lock(s_id, self.transactionID, p_id)):
-                                pass
-                            # execute updateInventory
-                            self.t_conn.updateInventory(s_id, self.transactionID, int(p_id), int(inventory - quantity))
-                            self.t_conn.insertOrder(s_id, self.transactionID, int(p_id), int(quantity))
-            # commit all the changes
-            self.t_conn.commit(self.transactionID, True)
-            self.t_conn.release_all_lock(self.transactionID)
+            for s_id, p_id, amount in self.order:
+                thread_product.append(
+                    threading.Thread(target=self.start_inventory_product, args=(s_id, p_id, int(amount))))
+                thread_product[c].start()
+                c = c + 1
+            for thread in thread_product:
+                thread.join()
+            self.commit()
         except Exception as e:
             # if any Exception occur we want to print why.
-            self.t_conn.out_of_order_tran[self.transactionID] = str(e)
+            self.error = str(e)
         finally:
             # always release lock and rollback all the un-save changes
-            if len(self.t_conn.out_of_order_tran[self.transactionID]) > 0 or self.timeout:
-                self.t_conn.rollback(self.transactionID)
-                self.t_conn.undo(self.transactionID)
-            self.t_conn.rollback(self.transactionID)
-            self.t_conn.release_all_lock(self.transactionID)
+            if self.error is not None or self.timeout:
+                self.rollback()
+                self.undo()
+            self.rollback()
+            self.release_all_lock()
 
     def try_update_lock(self, s_id, p_id):
         """
@@ -179,7 +139,7 @@ class Thread_with_exception(threading.Thread):
             f"'{str(self.transactionID)}', {p_id}, 'read', 'select * from Locks where productID = {p_id} "
             f"and transactionID "
             f"!= ''{str(self.transactionID)}'' ')")
-        self.self.conn[s_id][0].commit()
+        self.conn[s_id][0].commit()
         # if lock is free
         if len(rows) == 0:
             # delete the the current log
@@ -187,7 +147,7 @@ class Thread_with_exception(threading.Thread):
             self.conn[s_id][0].commit()
             self.lock_taken[s_id][p_id] = []
             # acquire the lock
-            self.lock_taken[s_id][p_id] = ['w']
+            self.lock_taken[s_id][p_id] = ['write']
             self.conn[s_id][1].execute(
                 f"insert into Locks values ('{str(self.transactionID)}', {p_id}, 'write')")
             self.conn[s_id][0].commit()
@@ -208,9 +168,21 @@ class Thread_with_exception(threading.Thread):
             return True
         return False
 
-    def release_all_lock(self, transactionID):
+    def start_inventory_product(self, s_id, p_id, wanted_quantity):
+        while not self.try_acquire_lock(s_id, p_id, 'read'):
+            pass
+        inventory = self.read_inventory(s_id, p_id)
+        if inventory < wanted_quantity:
+            self.error = f"out of order. sID = {s_id} pID = {p_id}"
+            raise Exception
+        self.history[s_id] = (inventory, p_id)
+        while not self.try_update_lock(s_id, p_id):
+            pass
+        self.update_inventory(s_id, p_id, int(inventory - wanted_quantity))
+        self.insert_order(s_id, p_id, int(wanted_quantity))
+
+    def release_all_lock(self):
         """
-        :param transactionID:
         :return: delete all appropriate locks
         :notice this is 2PL strict
         """
@@ -284,7 +256,7 @@ class Thread_with_exception(threading.Thread):
         if self.lock_taken[s_id][p_id][0] != 'write':
             self.error = "Tried to write with out lock"
             raise Exception
-        # set right query
+            # set right query
             self.to_commit[s_id]['iInventory'].append((p_id, values))
             self.to_commit[s_id]['orderLog']. \
                 append((f'{datetime.datetime.now().strftime(self.f)}',
@@ -381,22 +353,18 @@ class Thread_with_exception(threading.Thread):
                     continue
                 elif type == 'orderLog':
                     self.conn[s_id][1].executemany("insert into Log values (?, ?, ?, ?, ?, ?)",
-                                                                  self.to_commit[transactionID][s_id][type])
+                                                   self.to_commit[s_id][type])
                 elif type == 'iInventory':
                     self.conn[s_id][1].executemany("insert into ProductsInventory values (?, ?)",
-                                                                  self.to_commit[transactionID][s_id][type])
+                                                   self.to_commit[s_id][type])
                 elif type == 'uInventory':
-                        for inventory, p_id in self.to_commit[s_id]['uInventory']:
-                            self.history[s_id].append((self.update_inventory[s_id][p_id], p_id))
-                            self.update_inventory[s_id][p_id] = inventory
                     self.conn[s_id][1].executemany("update ProductsInventory set inventory = ? where"
-                                                                  " productID = ?",
-                                                                  self.to_commit[s_id][type])
+                                                   " productID = ?",
+                                                   self.to_commit[s_id][type])
                 elif type == 'order':
-                    self.conn[transactionID][s_id][1].executemany("insert into ProductsOrdered values (?, ?, ?)",
-                                                                  self.to_commit[transactionID][s_id][type])
-                self.conn[transactionID][s_id][0].commit()
-
+                    self.conn[s_id][1].executemany("insert into ProductsOrdered values (?, ?, ?)",
+                                                   self.to_commit[s_id][type])
+                self.conn[s_id][0].commit()
 
     def get_id(self):
         # returns id of the respective thread
@@ -490,13 +458,14 @@ def manage_transactions(t):
 
     for transactionID, order in check_inventory.items():
         # connect all the needed connection for the transaction
+        list_conn = {}
         if isinstance(order.T[0], np.int64):
-            conn.connect_to(transactionID, order.T[0])
+            list_conn[s_id] = (conn.connect_to(s_id))
         else:
             for s_id in order.T[0]:
-                conn.connect_to(transactionID, s_id)
+                list_conn[s_id] = (conn.connect_to(s_id))
         # prepare the thread
-        p = Thread_with_exception(transactionID, order, conn)
+        p = Thread_with_exception(transactionID, order, list_conn)
         p.start()
         # wait t second for the thread
         p.join(t)
@@ -508,8 +477,8 @@ def manage_transactions(t):
             # wait till p is finished
             p.join()
         # if p is done but didnt succeed
-        elif 0 < len(conn.out_of_order_tran[transactionID]):
-            print(transactionID, conn.out_of_order_tran[transactionID])
+        elif p.error is not None:
+            print(transactionID, p.error)
         else:
             print(transactionID, "succeed")
     # close all connection
@@ -566,5 +535,4 @@ def update_inventory(transcationID):
 
 
 if __name__ == '__main__':
-    update_inventory(3)
-    manage_transactions(100)
+    manage_transactions(1000)

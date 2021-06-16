@@ -496,7 +496,7 @@ def manage_transactions(t):
         else:
             print(transactionID, "succeed")
     # close all connection
-    conn.close_connection(transactionID)
+    conn.close_connection()
 
 
 def update_inventory(transcationID):

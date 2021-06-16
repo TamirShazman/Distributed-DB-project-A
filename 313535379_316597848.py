@@ -79,7 +79,7 @@ class Thread_with_exception(threading.Thread):
         # True if time out
         self.timeout = False
         # hold exception as we want to know why the the transaction wasn't complete
-        self.error = None
+        self.my_error = None
         # execute history to commit for each table
         self.to_commit = {}
         # history of inventory in case of abort
@@ -112,8 +112,7 @@ class Thread_with_exception(threading.Thread):
                         # if out of order
                         if inventory < quantity:
                             # notify and go back
-                            print("inventory", inventory, "quantity", quantity, "pID", p_id, "tID", self.transactionID)
-                            self.error = f"out of order ! siteID:{s_id}, pID:{p_id}, wanted amount:{quantity}," \
+                            self.my_error = f"out of order ! siteID:{s_id}, pID:{p_id}, wanted amount:{quantity}," \
                                          f" inventory:{inventory}"
                         else:
                             # wait until we update the lock
@@ -130,7 +129,7 @@ class Thread_with_exception(threading.Thread):
             self.error = str(e)
         finally:
             # always release lock and rollback all the un-save changes
-            if self.error is not None or self.timeout:
+            if self.my_error is not None or self.timeout:
                 self.rollback()
                 self.undo()
             self.rollback()
@@ -475,8 +474,8 @@ def manage_transactions(t):
             # wait till p is finished
             p.join()
         # if p is done but didnt succeed
-        elif p.error is not None:
-            print(transactionID, p.error)
+        elif p.my_error is not None:
+            print(p.my_error)
         else:
             print(transactionID, "succeed")
     # close all connection
@@ -484,19 +483,21 @@ def manage_transactions(t):
 
 
 def update_inventory(transcationID):
-    conn = Connector()
+    connection = Connector()
     f = '%Y-%m-%d %H:%M:%S'
-    conn.connect_to(transcationID, X)
+    conn1 = connection.connect_to(transcationID, X)
+    conn = Thread_with_exception(transcationID, None, conn1)
+    p = Thread_with_exception
     # check if the there a write lock on product 1.
     sql = 'select * from Locks where productID = 1 and locktype = "write"'
-    rows = conn.conn[transcationID][X][1].execute(
+    rows = conn1[1].execute(
         "select * from Locks where productID = 1 and locktype = 'write'"). \
         fetchall()
     # If there isn't a lock on product number 1, the table might not been initialized
     if len(rows) == 0:
         try:
             # Try to write this read attempt in log
-            conn.conn[transcationID][X][1].execute(
+            conn1[1].execute(
                 f"insert into Log values ('{datetime.datetime.now().strftime(f)}', 'Locks', '{str(transcationID)}'"
                 f", 1, 'read', '{sql}')")
         except pyodbc.DatabaseError as err:
@@ -507,30 +508,30 @@ def update_inventory(transcationID):
             #  else, we need to initiate the productInventory table
             else:
                 # insert product
-                conn.insertInventory(X, transcationID, 1, 'ProductsInventory', 52)
+                conn.insertInventory(X, 1, 'ProductsInventory', 52)
                 for i in range(2, 13):
-                    conn.insertInventory(X, transcationID, i, 'ProductsInventory', 48)
-                conn.commit(transcationID)
+                    conn.insertInventory(X, i, 'ProductsInventory', 48)
+                conn.commit()
                 # After all the product are initialize we can return
                 return
 
     # The table are already initialized
-    conn.conn[transcationID][X][0].commit()
+    conn1[0].commit()
 
     # Looping until locks are free from the other transaction
     num_of_locks = 0
     while num_of_locks < 12:
         for i in range(1, 13):
-            if conn.try_acquire_lock(X, transcationID, i, 'write'):
+            if conn.try_acquire_lock(X, i, 'write'):
                 num_of_locks = num_of_locks + 1
     # After all locks are obtain we can update
-    conn.updateInventory(X, transcationID, 1, 52)
+    conn.updateInventory(X, 1, 52)
     for i in range(2, 13):
-        conn.updateInventory(X, transcationID, i, 48)
-    conn.commit(transcationID)
-    conn.release_all_lock(transcationID)
-    conn.close_connection(transcationID)
+        conn.updateInventory(X, i, 48)
+    conn.commit()
+    conn.release_all_lock()
+    conn1.close_connection()
 
 
 if __name__ == '__main__':
-    manage_transactions(1000)
+    update_inventory(1000)

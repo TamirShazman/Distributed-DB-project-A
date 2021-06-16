@@ -120,6 +120,7 @@ class Thread_with_exception(threading.Thread):
                             # notify and go back
                             self.my_error = f"out of order ! siteID:{s_id}, pID:{p_id}, wanted amount:{quantity}," \
                                             f" inventory:{inventory}"
+                            return
                         else:
                             # wait until we update the lock
                             while not (self.try_update_lock(s_id, p_id)):
@@ -491,7 +492,7 @@ def manage_transactions(t):
             p.join()
         # if p is done but didnt succeed
         elif p.my_error is not None:
-            print(p.my_error)
+            print(transactionID, p.my_error)
         else:
             print(transactionID, "succeed")
     # close all connection
@@ -547,4 +548,7 @@ def update_inventory(transcationID):
 
 
 if __name__ == '__main__':
+    create_tables()
+    update_inventory(1)
+    update_inventory(2)
     manage_transactions(60)

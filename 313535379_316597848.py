@@ -98,18 +98,33 @@ class Thread_with_exception(threading.Thread):
     def run(self):
         # target function of the thread class
         try:
-            c = 0
-            thread_product = []
+            num_of_locks = 0
             # TODO error one row
             # first we acquire read locks check if inventory is enough, if so we acquire write lock
-            for s_id, p_id, amount in self.order:
-                thread_product.append(
-                    threading.Thread(target=self.start_inventory_product, args=(s_id, p_id, int(amount))))
-                thread_product[c].start()
-                c = c + 1
-            for thread in thread_product:
-                thread.join()
+            while num_of_locks < len(self.order.T[0]):
+                for s_id, p_id, quantity in self.order:
+                    # check if theres any write lock
+                    if self.try_acquire_lock(s_id, p_id, 'read'):
+                        # set num_of_locks
+                        num_of_locks = num_of_locks + 1
+                        # read inventory
+                        inventory = self.read_inventory(s_id, p_id)
+                        # if out of order
+                        if inventory < quantity:
+                            # notify and go back
+                            print("inventory", inventory, "quantity", quantity, "pID", p_id, "tID", self.transactionID)
+                            self.error = f"out of order ! siteID:{s_id}, pID:{p_id}, wanted amount:{quantity}," \
+                                         f" inventory:{inventory}"
+                        else:
+                            # wait until we update the lock
+                            while not (self.try_update_lock(s_id, p_id)):
+                                pass
+                            # execute updateInventory
+                            self.update_inventory(s_id, int(p_id), int(inventory - quantity))
+                            self.insert_order(s_id, int(p_id), int(quantity))
+            # commit all the changes
             self.commit()
+            self.release_all_lock()
         except Exception as e:
             # if any Exception occur we want to print why.
             self.error = str(e)
@@ -167,19 +182,6 @@ class Thread_with_exception(threading.Thread):
             self.conn[s_id][0].commit()
             return True
         return False
-
-    def start_inventory_product(self, s_id, p_id, wanted_quantity):
-        while not self.try_acquire_lock(s_id, p_id, 'read'):
-            pass
-        inventory = self.read_inventory(s_id, p_id)
-        if inventory < wanted_quantity:
-            self.error = f"out of order. sID = {s_id} pID = {p_id}"
-            raise Exception
-        self.history[s_id] = (inventory, p_id)
-        while not self.try_update_lock(s_id, p_id):
-            pass
-        self.update_inventory(s_id, p_id, int(inventory - wanted_quantity))
-        self.insert_order(s_id, p_id, int(wanted_quantity))
 
     def release_all_lock(self):
         """
@@ -311,12 +313,13 @@ class Thread_with_exception(threading.Thread):
         for s_id in self.conn.keys():
             self.conn[s_id][1].execute(f"delete from ProductsOrdered where "
                                        f"transactionID = '{self.transactionID}'")
-            self.conn[s_id][1].execute(f"delete from Log where transactionID = '{self.transactionID}' "
+            self.conn[s_id][1].execute(f"delete from Log where transactionID = '{self.transactionID}' and "
                                        f"relation != 'Locks'")
             if len(self.history[s_id]) != 0:
                 self.conn[s_id][1].executemany("update ProductsInventory set inventory = ? where"
                                                " productID = ?",
                                                self.history[s_id])
+            self.conn[s_id][0].commit()
 
     def read_inventory(self, s_id, p_id):
         """
@@ -329,21 +332,16 @@ class Thread_with_exception(threading.Thread):
             raise Exception
         inventory = self.conn[s_id][1].execute(
             f"select inventory from ProductsInventory where productID = {p_id}").fetchall()
+        self.history[s_id].append((int(inventory[0][0]), int(p_id)))
         # write to log
         self.conn[s_id][0].execute(
             f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}','ProductsInventory', "
             f"'{str(self.transactionID)}', {p_id}, 'read', 'select inventory from ProductsInventory where productID= {p_id}')")
         self.conn[s_id][1].commit()
-        # update update_inventory if we needed to read
-        if len(inventory) == 0:
-            return 0
         return inventory[0][0]
 
     def commit(self):
         """
-        :param mange_Transcation:
-        :param order:
-        :param transactionID:
         :return:
         :commit all execute query in specific transactionID
         """

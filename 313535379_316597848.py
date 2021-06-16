@@ -73,234 +73,6 @@ class Connector:
             self.history[transactionID] = {s_id: []}
             self.out_of_order_tran[transactionID] = []
 
-    def try_update_lock(self, s_id, transactionID, p_id):
-        """
-        :param s_id:
-        :param transactionID:
-        :param p_id:
-        :return: True if it mange to update the lock from read to write, False if it didnt
-        :notice that when lock transaction is execute they always committed in the same function as normal transaction
-        are not
-        """
-        f = '%Y-%m-%d %H:%M:%S'
-        # check if lock is free
-        sql = f"select * from Locks where productID = {p_id} and transactionID != '{str(transactionID)}' "
-        self.conn[transactionID][s_id][1].execute(sql)
-        rows = self.conn[transactionID][s_id][1].fetchall()
-        # notify the log
-        self.conn[transactionID][s_id][1].execute(
-            f"insert into Log values ('{datetime.datetime.now().strftime(f)}', 'Locks', "
-            f"'{str(transactionID)}', {p_id}, 'read', 'select * from Locks where productID = {p_id} and transactionID "
-            f"!= ''{str(transactionID)}'' ')")
-        self.conn[transactionID][s_id][0].commit()
-        # if lock is free
-        if len(rows) == 0:
-            # delete the the current log
-            self.conn[transactionID][s_id][1].execute(f"delete from Locks where productId = {p_id}")
-            self.conn[transactionID][s_id][0].commit()
-            # notice the log
-            self.conn[transactionID][s_id][1].execute(
-                f"insert into Log values ('{datetime.datetime.now().strftime(f)}', 'Locks',"
-                f"'{str(transactionID)}', {p_id},'delete', "
-                f"'delete from Locks where productId = {p_id}')")
-            self.conn[transactionID][s_id][0].commit()
-            # acquire the lock
-            self.conn[transactionID][s_id][1].execute(
-                f"insert into Locks values ('{str(transactionID)}', {p_id}, 'write')")
-            self.conn[transactionID][s_id][0].commit()
-            # notify the log
-            self.conn[transactionID][s_id][1].execute(
-                f"insert into Log values ('{datetime.datetime.now().strftime(f)}', 'Locks'"
-                f", '{str(transactionID)}', {p_id},'insert', 'insert into Locks values (''{str(transactionID)}'', "
-                f"{p_id}, ""write""' )")
-            self.conn[transactionID][s_id][0].commit()
-            return True
-        self.conn[transactionID][s_id][0].commit()
-        return False
-
-    def release_all_lock(self, transactionID):
-        """
-        :param transactionID:
-        :return: delete all appropriate locks
-        :notice this is 2PL strict
-        """
-        f = '%Y-%m-%d %H:%M:%S'
-        for s_id in self.conn[transactionID]:
-            locks = self.conn[transactionID][s_id][1].execute(
-                f"select productId from Locks where transactionID = '{transactionID}'").fetchall()
-            for p_id in locks:
-                # delete from table
-                self.conn[transactionID][s_id][1].execute(f"delete from Locks where productId = {p_id[0]} and "
-                                                          f"transactionID = '{str(transactionID)}'")
-                # notify log
-                self.conn[transactionID][s_id][1].execute(
-                    f"insert into Log values ('{datetime.datetime.now().strftime(f)}', 'Locks',"
-                    f"'{str(transactionID)}', {p_id[0]},'delete', "
-                    f"'delete from Locks where productId = {p_id} and transactionID = ''{str(transactionID)}'' ')")
-        self.conn[transactionID][s_id][0].commit()
-
-    def try_acquire_lock(self, s_id, transactionID, p_id, l_type):
-        """
-        :param s_id:
-        :param transactionID:
-        :param p_id:
-        :param l_type:
-        :return: True if acquire the lock, False otherwise
-        """
-        f = '%Y-%m-%d %H:%M:%S'
-        # create the right query
-        if l_type == 'read':
-            sql = f"select * from Locks where productID = {p_id} and lockType = 'write'"
-        else:
-            sql = f"select * from Locks where productID = {p_id}"
-        # check if it can acquire the lock
-        rows = self.conn[transactionID][s_id][1].execute(sql).fetchall()
-        # notice the log
-        self.conn[transactionID][s_id][1].execute(
-            f"insert into Log values ('{datetime.datetime.now().strftime(f)}', 'Locks', "
-            f"'{str(transactionID)}', {p_id}, 'read', 'select * from Locks where productID = {p_id} "
-            f"and lockType = ""write""')")
-        self.conn[transactionID][s_id][0].commit()
-        # if can acquire lock
-        if len(rows) == 0:
-            # acquire the lock
-            self.conn[transactionID][s_id][1].execute(
-                f"insert into Locks values ('{str(transactionID)}', {p_id}, '{l_type}')")
-            # notify log
-            self.conn[transactionID][s_id][1].execute(
-                f"insert into Log values ('{datetime.datetime.now().strftime(f)}', 'Locks'"
-                f", '{str(transactionID)}', {p_id},'insert', 'insert into Locks values (''{str(transactionID)}'', "
-                f"{p_id}, ''{l_type}'')' )")
-            # commit
-            self.conn[transactionID][s_id][0].commit()
-            return True
-        self.conn[transactionID][s_id][0].commit()
-        return False
-
-    def insertInventory(self, s_id, transactionID, p_id, table, values):
-        """
-        :param s_id:
-        :param transactionID:
-        :param p_id:
-        :param table:
-        :param values:
-        :return:
-        :notice: execute the the query to the right connection, DOSEN'T COMMIT IT
-        """
-        f = '%Y-%m-%d %H:%M:%S'
-        # set right query
-        self.to_commit[transactionID][s_id]['iInventory'].append((p_id, values))
-        self.to_commit[transactionID][s_id]['orderLog']. \
-            append((f'{datetime.datetime.now().strftime(f)}',
-                    'ProductsInventory', transactionID, p_id, 'insert',
-                    f'insert into ProductsInventory values ({p_id}, {values})'))
-
-    def insertOrder(self, s_id, transactionID, p_id, values):
-        """
-        :param s_id:
-        :param transactionID:
-        :param p_id:
-        :param table:
-        :param values:
-        :return:
-        :notice: execute the the query to the right connection, DOSEN'T COMMIT IT
-        """
-        f = '%Y-%m-%d %H:%M:%S'
-        # set right query
-        self.to_commit[transactionID][s_id]['order'].append((f'{str(transactionID)}', p_id, values))
-        self.to_commit[transactionID][s_id]['orderLog']. \
-            append((f'{datetime.datetime.now().strftime(f)}',
-                    'ProductsInventory', transactionID, p_id, 'insert',
-                    f'insert into ProductsOrdered values ({str(transactionID)}, {p_id}), {values}'))
-
-    def updateInventory(self, s_id, transactionID, p_id, quantity):
-        """
-        :param s_id:
-        :param transactionID:
-        :param p_id:
-        :param quantity:
-        :return:
-        notice: execute update query to the right connection, DOSEN'T COMMIT IT
-        """
-        f = '%Y-%m-%d %H:%M:%S'
-        self.to_commit[transactionID][s_id]['uInventory'].append((quantity, p_id))
-        # notify log
-        self.to_commit[transactionID][s_id]['orderLog']. \
-            append((f'{datetime.datetime.now().strftime(f)}', 'ProductsInventory', transactionID, p_id, 'update',
-                    f'update ProductsInventory set inventory = {quantity} where productID = {p_id}'))
-
-    def read_inventory(self, s_id, transactionID, p_id):
-        """
-        :param s_id:
-        :param transactionID:
-        :param p_id:
-        :return: inventory as int
-        """
-        f = '%Y-%m-%d %H:%M:%S'
-        # if we don't need to read from the db
-        if s_id in self.update_inventory.keys():
-            if p_id in self.update_inventory[s_id]:
-                return self.update_inventory[s_id][p_id]
-        # if we need to read
-        inventory = self.conn[transactionID][s_id][1].execute(
-            f"select inventory from ProductsInventory where productID = {p_id}").fetchall()
-        # write to log
-        self.conn[transactionID][s_id][0].execute(
-            f"insert into Log values ('{datetime.datetime.now().strftime(f)}','ProductsInventory', "
-            f"'{str(transactionID)}', {p_id}, 'read', 'select inventory from ProductsInventory where productID= {p_id}')")
-        self.conn[transactionID][s_id][1].commit()
-        # update update_inventory if we needed to read
-        if s_id in self.update_inventory.keys():
-            if p_id in self.update_inventory[s_id]:
-                self.update_inventory[s_id][p_id] = inventory[0][0]
-            else:
-                self.update_inventory[s_id].update({p_id: inventory[0][0]})
-        else:
-            self.update_inventory.update({s_id: {p_id: inventory[0][0]}})
-        if len(inventory) == 0:
-            return 0
-        return inventory[0][0]
-
-    def commit(self, transactionID, manage_Transation=False):
-        """
-        :param mange_Transcation:
-        :param order:
-        :param transactionID:
-        :return:
-        :commit all execute query in specific transactionID
-        """
-        for s_id in self.to_commit[transactionID].keys():
-            for type in self.to_commit[transactionID][s_id].keys():
-                if len(self.to_commit[transactionID][s_id][type]) == 0:
-                    continue
-                elif type == 'orderLog':
-                    self.conn[transactionID][s_id][1].executemany("insert into Log values (?, ?, ?, ?, ?, ?)",
-                                                                  self.to_commit[transactionID][s_id][type])
-                elif type == 'iInventory':
-                    self.conn[transactionID][s_id][1].executemany("insert into ProductsInventory values (?, ?)",
-                                                                  self.to_commit[transactionID][s_id][type])
-                elif type == 'uInventory':
-                    if manage_Transation:
-                        for inventory, p_id in self.to_commit[transactionID][s_id]['uInventory']:
-                            self.history[transactionID][s_id].append((self.update_inventory[s_id][p_id], p_id))
-                            self.update_inventory[s_id][p_id] = inventory
-                    self.conn[transactionID][s_id][1].executemany("update ProductsInventory set inventory = ? where"
-                                                                  " productID = ?",
-                                                                  self.to_commit[transactionID][s_id][type])
-                elif type == 'order':
-                    self.conn[transactionID][s_id][1].executemany("insert into ProductsOrdered values (?, ?, ?)",
-                                                                  self.to_commit[transactionID][s_id][type])
-                self.conn[transactionID][s_id][0].commit()
-
-    def rollback(self, transactionID):
-        """
-        :param transactionID:
-        :return:
-        :rollback all execute query in specific transactionID
-        """
-        for s_id in self.conn[transactionID]:
-            self.conn[transactionID][s_id][0].rollback()
-
     def close_connection(self, transactionID):
         """
         :param transactionID:
@@ -314,17 +86,6 @@ class Connector:
         del self.conn[transactionID], self.history[transactionID], self.to_commit[transactionID],
         self.out_of_order_tran[transactionID]
 
-    def undo(self, transactionID):
-        for s_id in self.conn[transactionID]:
-            self.conn[transactionID][s_id][1].execute(f"delete from ProductsOrdered where "
-                                                      f"transactionID = '{transactionID}'")
-            self.conn[transactionID][s_id][1].execute(f"delete from Log where transactionID = '{transactionID}' "
-                                                      f"relation != 'Locks'")
-            if len(self.history[transactionID][s_id]) != 0:
-                self.conn[transactionID][s_id][1].executemany("update ProductsInventory set inventory = ? where"
-                                                              " productID = ?",
-                                                              self.history[transactionID][s_id])
-
 
 class Thread_with_exception(threading.Thread):
     """
@@ -335,10 +96,29 @@ class Thread_with_exception(threading.Thread):
     def __init__(self, transactionID, order, conn):
         threading.Thread.__init__(self)
         self.transactionID = transactionID
+        # np table of order
         self.order = order
-        self.t_conn = conn
+        # connection class
+        self.conn = conn
+        # True if time out
         self.timeout = False
-        self.working = False
+        # hold update inventory as we keep checking if the order is available
+        self.update_inventory = {}
+        # hold exception as we want to know why the the transaction wasn't complete
+        self.error = None
+        # execute history to commit for each table
+        self.to_commit = {}
+        # history of inventory in case of abort
+        self.history = {}
+        # which look has been taken
+        self.lock_taken = {}
+        self.f = '%Y-%m-%d %H:%M:%S'
+        # initialize
+        for s_id, p_id, _ in self.order:
+            self.update_inventory.update({s_id: []})
+            self.to_commit.update({s_id: {'uInventory': [], 'iInventory': [], 'order': [], 'orderLog': []}})
+            self.history.update({s_id: []})
+            self.lock_taken.update({s_id: {p_id: []}})
 
     def run(self):
         # target function of the thread class
@@ -380,6 +160,243 @@ class Thread_with_exception(threading.Thread):
                 self.t_conn.undo(self.transactionID)
             self.t_conn.rollback(self.transactionID)
             self.t_conn.release_all_lock(self.transactionID)
+
+    def try_update_lock(self, s_id, p_id):
+        """
+        :param s_id:
+        :param p_id:
+        :return: True if it mange to update the lock from read to write, False if it didnt
+        :notice that when lock transaction is execute they always committed in the same function as normal transaction
+        are not
+        """
+        # check if lock is free
+        sql = f"select * from Locks where productID = {p_id} and transactionID != '{str(self.transactionID)}' "
+        self.conn[s_id][1].execute(sql)
+        rows = self.conn[s_id][1].fetchall()
+        # notify the log
+        self.conn[s_id][1].execute(
+            f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks', "
+            f"'{str(self.transactionID)}', {p_id}, 'read', 'select * from Locks where productID = {p_id} "
+            f"and transactionID "
+            f"!= ''{str(self.transactionID)}'' ')")
+        self.self.conn[s_id][0].commit()
+        # if lock is free
+        if len(rows) == 0:
+            # delete the the current log
+            self.conn[s_id][1].execute(f"delete from Locks where productId = {p_id}")
+            self.conn[s_id][0].commit()
+            self.lock_taken[s_id][p_id] = []
+            # acquire the lock
+            self.lock_taken[s_id][p_id] = ['w']
+            self.conn[s_id][1].execute(
+                f"insert into Locks values ('{str(self.transactionID)}', {p_id}, 'write')")
+            self.conn[s_id][0].commit()
+
+            # notice the log
+            self.conn[s_id][1].execute(
+                f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks',"
+                f"'{str(self.transactionID)}', {p_id},'delete', "
+                f"'delete from Locks where productId = {p_id}')")
+            self.conn[s_id][0].commit()
+            # notify the log
+            self.conn[s_id][1].execute(
+                f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks'"
+                f", '{str(self.transactionID)}', {p_id},'insert', 'insert into Locks values "
+                f"(''{str(self.transactionID)}'', "
+                f"{p_id}, ""write""' )")
+            self.conn[s_id][0].commit()
+            return True
+        return False
+
+    def release_all_lock(self, transactionID):
+        """
+        :param transactionID:
+        :return: delete all appropriate locks
+        :notice this is 2PL strict
+        """
+        # delete all locks
+        for s_id in self.lock_taken.keys():
+            for p_id, l_type in self.lock_taken[s_id].items():
+                # if any lock from this item been taken
+                if len(l_type) > 0:
+                    count = self.conn[s_id][1].execute(f"delete from Locks where productId = {p_id} and "
+                                                       f"transactionID = '{str(self.transactionID)}' "
+                                                       f"and lockType = '{l_type[0]}'").rowcount
+                    if count > 0:
+                        # notify log if needed (incase of timeout we might miss something and the lock already released)
+                        self.conn[s_id][1].execute(
+                            f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks',"
+                            f"'{str(self.transactionID)}', {p_id},'delete', "
+                            f"'delete from Locks where productId = {p_id} and transactionID = ''{str(self.transactionID)}'' ')")
+            self.conn[s_id][0].commit()
+        # notify dict
+        for s_id in self.lock_taken.keys():
+            for p_id, _ in self.lock_taken[s_id].items():
+                self.lock_taken[s_id][p_id] = []
+
+    def try_acquire_lock(self, s_id, p_id, l_type):
+        """
+        :param s_id:
+        :param p_id:
+        :param l_type:
+        :return: True if acquire the lock, False otherwise
+        """
+        # create the right query
+        if l_type == 'read':
+            sql = f"select * from Locks where productID = {p_id} and lockType = 'write'"
+        else:
+            sql = f"select * from Locks where productID = {p_id}"
+        # check if it can acquire the lock
+        rows = self.conn[s_id][1].execute(sql).fetchall()
+        # notice the log
+        self.conn[s_id][1].execute(
+            f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks', "
+            f"'{str(self.transactionID)}', {p_id}, 'read', 'select * from Locks where productID = {p_id} "
+            f"and lockType = ""write""')")
+        self.conn[s_id][0].commit()
+        # if can acquire lock
+        if len(rows) == 0:
+            # remember that the lock been taken
+            self.lock_taken[s_id][p_id].append(l_type)
+            # acquire the lock
+            self.conn[s_id][1].execute(
+                f"insert into Locks values ('{str(self.transactionID)}', {p_id}, '{l_type}')")
+            self.conn[s_id][0].commit()
+            # notify log
+            self.conn[s_id][1].execute(
+                f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks'"
+                f", '{str(self.transactionID)}', "
+                f"{p_id},'insert', 'insert into Locks values (''{str(self.transactionID)}'', "
+                f"{p_id}, ''{l_type}'')' )")
+            # commit
+            self.conn[s_id][0].commit()
+            return True
+        return False
+
+    def insert_inventory(self, s_id, p_id, values):
+        """
+        :param s_id:
+        :param p_id:
+        :param values:
+        :return:
+        :notice: execute the the query to the right connection, DOSEN'T COMMIT IT
+        """
+        if self.lock_taken[s_id][p_id][0] != 'write':
+            self.error = "Tried to write with out lock"
+            raise Exception
+        # set right query
+            self.to_commit[s_id]['iInventory'].append((p_id, values))
+            self.to_commit[s_id]['orderLog']. \
+                append((f'{datetime.datetime.now().strftime(self.f)}',
+                        'ProductsInventory', self.transactionID, p_id, 'insert',
+                        f'insert into ProductsInventory values ({p_id}, {values})'))
+
+    def insert_order(self, s_id, p_id, values):
+        """
+        :param s_id:
+        :param p_id:
+        :param values:
+        :return:
+        :notice: execute the the query to the right connection, DOSEN'T COMMIT IT
+        """
+        if self.lock_taken[s_id][p_id][0] != 'write':
+            self.error = "Tried to write with out lock"
+            raise Exception
+        # set right query
+        self.to_commit[s_id]['order'].append((f'{str(self.transactionID)}', p_id, values))
+        self.to_commit[s_id]['orderLog']. \
+            append((f'{datetime.datetime.now().strftime(self.f)}',
+                    'ProductsInventory', self.transactionID, p_id, 'insert',
+                    f'insert into ProductsOrdered values ({str(self.transactionID)}, {p_id}), {values}'))
+
+    def update_inventory(self, s_id, p_id, quantity):
+        """
+        :param s_id:
+        :param p_id:
+        :param quantity:
+        :return:
+        notice: execute update query to the right connection, DOSEN'T COMMIT IT
+        """
+        if self.lock_taken[s_id][p_id][0] != 'write':
+            self.error = "Tried to write with out lock"
+            raise Exception
+        self.to_commit[s_id]['uInventory'].append((quantity, p_id))
+        # notify log
+        self.to_commit[s_id]['orderLog']. \
+            append((f'{datetime.datetime.now().strftime(self.f)}', 'ProductsInventory', self.transactionID, p_id,
+                    'update',
+                    f'update ProductsInventory set inventory = {quantity} where productID = {p_id}'))
+
+    def rollback(self):
+        """
+        :return:
+        :rollback all execute query in specific transactionID
+        """
+        for s_id in self.conn.keys():
+            self.conn[s_id][0].rollback()
+
+    def undo(self):
+        for s_id in self.conn.keys():
+            self.conn[s_id][1].execute(f"delete from ProductsOrdered where "
+                                       f"transactionID = '{self.transactionID}'")
+            self.conn[s_id][1].execute(f"delete from Log where transactionID = '{self.transactionID}' "
+                                       f"relation != 'Locks'")
+            if len(self.history[s_id]) != 0:
+                self.conn[s_id][1].executemany("update ProductsInventory set inventory = ? where"
+                                               " productID = ?",
+                                               self.history[s_id])
+
+    def read_inventory(self, s_id, p_id):
+        """
+        :param s_id:
+        :param p_id:
+        :return: inventory as int
+        """
+        if self.lock_taken[s_id][p_id][0] != 'read':
+            self.error = "Tried to read with out lock"
+            raise Exception
+        inventory = self.conn[s_id][1].execute(
+            f"select inventory from ProductsInventory where productID = {p_id}").fetchall()
+        # write to log
+        self.conn[s_id][0].execute(
+            f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}','ProductsInventory', "
+            f"'{str(self.transactionID)}', {p_id}, 'read', 'select inventory from ProductsInventory where productID= {p_id}')")
+        self.conn[s_id][1].commit()
+        # update update_inventory if we needed to read
+        if len(inventory) == 0:
+            return 0
+        return inventory[0][0]
+
+    def commit(self):
+        """
+        :param mange_Transcation:
+        :param order:
+        :param transactionID:
+        :return:
+        :commit all execute query in specific transactionID
+        """
+        for s_id in self.to_commit.keys():
+            for type in self.to_commit[s_id].keys():
+                if len(self.to_commit[s_id][type]) == 0:
+                    continue
+                elif type == 'orderLog':
+                    self.conn[s_id][1].executemany("insert into Log values (?, ?, ?, ?, ?, ?)",
+                                                                  self.to_commit[transactionID][s_id][type])
+                elif type == 'iInventory':
+                    self.conn[s_id][1].executemany("insert into ProductsInventory values (?, ?)",
+                                                                  self.to_commit[transactionID][s_id][type])
+                elif type == 'uInventory':
+                        for inventory, p_id in self.to_commit[s_id]['uInventory']:
+                            self.history[s_id].append((self.update_inventory[s_id][p_id], p_id))
+                            self.update_inventory[s_id][p_id] = inventory
+                    self.conn[s_id][1].executemany("update ProductsInventory set inventory = ? where"
+                                                                  " productID = ?",
+                                                                  self.to_commit[s_id][type])
+                elif type == 'order':
+                    self.conn[transactionID][s_id][1].executemany("insert into ProductsOrdered values (?, ?, ?)",
+                                                                  self.to_commit[transactionID][s_id][type])
+                self.conn[transactionID][s_id][0].commit()
+
 
     def get_id(self):
         # returns id of the respective thread

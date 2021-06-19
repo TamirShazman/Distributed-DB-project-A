@@ -204,8 +204,7 @@ class Thread_with_exception(threading.Thread):
                 # if any lock from this item been taken
                 if len(l_type) > 0:
                     count = self.conn[s_id][1].execute(f"delete from Locks where productId = {p_id} and "
-                                                       f"transactionID = '{str(self.transactionID)}' "
-                                                       f"and lockType = '{l_type[0]}'").rowcount
+                                                       f"transactionID = '{str(self.transactionID)}' ").rowcount
                     if count > 0:
                         # notify log if needed (incase of timeout we might miss something and the lock already released)
                         self.conn[s_id][1].execute(
@@ -237,7 +236,7 @@ class Thread_with_exception(threading.Thread):
         self.conn[s_id][1].execute(
             f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks', "
             f"'{str(self.transactionID)}', {p_id}, 'read', 'select * from Locks where productID = {p_id} "
-            f"and lockType = ""write""')")
+            f"and lockType = ''{l_type}''')")
         self.conn[s_id][0].commit()
         # if can acquire lock
         if len(rows) == 0:
@@ -502,6 +501,8 @@ def manage_transactions(t):
             print(transactionID, p.my_error)
         else:
             print(transactionID, "succeed")
+        # make sure all the locks are released
+        p.release_all_lock()
     # close all connection
     conn.close_connection()
 
@@ -555,7 +556,4 @@ def update_inventory(transcationID):
 
 
 if __name__ == '__main__':
-    create_tables()
-    update_inventory(1)
-    update_inventory(2)
     manage_transactions(60)

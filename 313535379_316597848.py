@@ -7,15 +7,13 @@ import numpy as np
 from collections import OrderedDict
 import ctypes
 
+# Local site ID
 X = 22
-my_product_test = {1: 52}
-my_product_test.update({i: 48 for i in range(2, 13)})
 
 
 class Connector:
     """
-    This class responsible for connection between the database and the server. It help to synchronize between threads
-    as they share the memory.
+    This class responsible for connection between the database and the server.
     """
 
     def __init__(self):
@@ -36,7 +34,6 @@ class Connector:
 
     def connect_to(self, s_id):
         """
-        :param transactionID:
         :param s_id:
         connect to database for each transaction and s_id
         """
@@ -57,7 +54,6 @@ class Connector:
 
     def close_connection(self):
         """
-        :param transactionID:
         :return:
         :close all connection for specific transactionID
         """
@@ -68,11 +64,18 @@ class Connector:
 class Thread_with_exception(threading.Thread):
     """
     This class is use for executing update transaction. This class inherits form thread because we want to raise a an
-    exception after timeout
+    exception after timeout.
+    Each transaction is considered as thread.
     """
 
     def __init__(self, transactionID, order, conn):
+        """
+        :param transactionID:
+        :param order: numpy array that hold the order request
+        :param conn: connector object to handle requests
+        """
         threading.Thread.__init__(self)
+
         self.transactionID = transactionID
         # np table of order
         self.order = order
@@ -82,12 +85,13 @@ class Thread_with_exception(threading.Thread):
         self.timeout = False
         # hold exception as we want to know why the the transaction wasn't complete
         self.my_error = None
-        # execute history to commit for each table
+        # queries to execute history to commit for each table
         self.to_commit = {}
         # history of inventory in case of abort
         self.history = {}
         # which look has been taken
         self.lock_taken = {}
+        # Time format
         self.f = '%Y-%m-%d %H:%M:%S'
         # initialize
         if order is not None:
@@ -207,7 +211,8 @@ class Thread_with_exception(threading.Thread):
                         self.conn[s_id][1].execute(
                             f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks',"
                             f"'{str(self.transactionID)}', {p_id},'delete', "
-                            f"'delete from Locks where productId = {p_id} and transactionID = ''{str(self.transactionID)}'' ')")
+                            f"'delete from Locks where productId = {p_id} and transactionID = "
+                            f"''{str(self.transactionID)}'' ')")
             self.conn[s_id][0].commit()
         # notify dict
         for s_id in self.lock_taken.keys():
@@ -289,9 +294,8 @@ class Thread_with_exception(threading.Thread):
                     'ProductsInventory', self.transactionID, p_id, 'insert',
                     f'insert into ProductsOrdered values ({str(self.transactionID)}, {p_id}), {values}'))
 
-    def update_inventory1(self, s_id, p_id, quantity, First_TIme=False):
+    def update_inventory1(self, s_id, p_id, quantity):
         """
-        :param First_TIme:
         :param s_id:
         :param p_id:
         :param quantity:
@@ -299,7 +303,7 @@ class Thread_with_exception(threading.Thread):
         notice: execute update query to the right connection, DOSEN'T COMMIT IT
         """
         if self.lock_taken[s_id][p_id][0] != 'write':
-            self.my_error = "Tried to write with out lock"
+            self.my_error = "Tried to write without lock"
             raise Exception
         self.to_commit[s_id]['uInventory'].append((quantity, p_id))
         # notify log
@@ -310,13 +314,16 @@ class Thread_with_exception(threading.Thread):
 
     def rollback(self):
         """
-        :return:
         :rollback all execute query in specific transactionID
         """
         for s_id in self.conn.keys():
             self.conn[s_id][0].rollback()
 
     def undo(self):
+        """
+        delete (and return ProductsInventory to the state before transaction)
+         the  all the history of the the transaction from the tables.
+        """
         for s_id in self.conn.keys():
             self.conn[s_id][1].execute(f"delete from ProductsOrdered where "
                                        f"transactionID = '{self.transactionID}'")

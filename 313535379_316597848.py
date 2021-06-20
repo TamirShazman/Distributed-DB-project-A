@@ -167,28 +167,19 @@ class Thread_with_exception(threading.Thread):
         self.conn[s_id][0].commit()
         # if lock is free
         if len(rows) == 0:
-            # delete the the current log
-            self.conn[s_id][1].execute(f"delete from Locks where productId = {p_id}")
-            self.conn[s_id][0].commit()
-            self.lock_taken[s_id][p_id] = []
-            # acquire the lock
+            # update the lock
             self.lock_taken[s_id][p_id] = ['write']
             self.conn[s_id][1].execute(
-                f"insert into Locks values ('{str(self.transactionID)}', {p_id}, 'write')")
+                f"update Locks set lockType = 'write' where transactionID = '{str(self.transactionID)}' and "
+                f"productID =  {p_id} ")
             self.conn[s_id][0].commit()
 
             # notice the log
             self.conn[s_id][1].execute(
                 f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks',"
-                f"'{str(self.transactionID)}', {p_id},'delete', "
-                f"'delete from Locks where productId = {p_id}')")
-            self.conn[s_id][0].commit()
-            # notify the log
-            self.conn[s_id][1].execute(
-                f"insert into Log values ('{datetime.datetime.now().strftime(self.f)}', 'Locks'"
-                f", '{str(self.transactionID)}', {p_id},'insert', 'insert into Locks values "
-                f"(''{str(self.transactionID)}'', "
-                f"{p_id}, ""write""' )")
+                f"'{str(self.transactionID)}', {p_id},'update', "
+                f"'update Locks set lockType = ''write'' where transactionID = ''{str(self.transactionID)}'' and"
+                f" productId = {p_id}')")
             self.conn[s_id][0].commit()
             return True
         return False

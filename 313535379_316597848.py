@@ -17,7 +17,7 @@ class Connector:
     """
 
     def __init__(self):
-        # map between db name and categories
+        # map between db names and categories
         cnxn_db = pyodbc.connect(DRIVER='{SQL Server};',
                                  SERVER='technionddscourse.database.windows.net;',
                                  DATABASE="dbteam",
@@ -54,8 +54,7 @@ class Connector:
 
     def close_connection(self):
         """
-        :return:
-        :close all connection for specific transactionID
+        :close all connections
         """
         for s_id in self.connect.keys():
             self.connect[s_id][0].close()
@@ -66,6 +65,8 @@ class Thread_with_exception(threading.Thread):
     This class is use for executing update transaction. This class inherits form thread because we want to raise a an
     exception after timeout.
     Each transaction is considered as thread.
+    The mange of each transaction is according to Strict 2PL protocol as we release all the locks in the end of
+    the transaction and update each read lock to write lock if needed
     """
 
     def __init__(self, transactionID, order, conn):
@@ -81,7 +82,7 @@ class Thread_with_exception(threading.Thread):
         self.order = order
         # connection class
         self.conn = conn
-        # True if time out
+        # True if timeout
         self.timeout = False
         # hold exception as we want to know why the the transaction wasn't complete
         self.my_error = None
@@ -107,7 +108,10 @@ class Thread_with_exception(threading.Thread):
             self.history[X] = []
 
     def run(self):
-        # target function of the thread class
+        """
+        When transaction starts to executes it starts here
+        """
+
         try:
             num_of_locks = 0
             # first we acquire read locks check if inventory is enough, if so we acquire write lock
@@ -186,7 +190,7 @@ class Thread_with_exception(threading.Thread):
 
     def release_all_lock(self):
         """
-        :return: delete all appropriate locks
+        delete all appropriate locks
         :notice this is 2PL strict
         """
         # delete all locks
@@ -194,6 +198,7 @@ class Thread_with_exception(threading.Thread):
             for p_id, l_type in self.lock_taken[s_id].items():
                 # if any lock from this item been taken
                 if len(l_type) > 0:
+                    # count is to check if any row has deleted
                     count = self.conn[s_id][1].execute(f"delete from Locks where productId = {p_id} and "
                                                        f"transactionID = '{str(self.transactionID)}' ").rowcount
                     if count > 0:
@@ -204,7 +209,7 @@ class Thread_with_exception(threading.Thread):
                             f"'delete from Locks where productId = {p_id} and transactionID = "
                             f"''{str(self.transactionID)}'' ')")
             self.conn[s_id][0].commit()
-        # notify dict
+        # update dict
         for s_id in self.lock_taken.keys():
             for p_id, _ in self.lock_taken[s_id].items():
                 self.lock_taken[s_id][p_id] = []
@@ -252,9 +257,8 @@ class Thread_with_exception(threading.Thread):
         """
         :param s_id:
         :param p_id:
-        :param values:
-        :return:
-        :notice: execute the the query to the right connection, DOSEN'T COMMIT IT
+        :param values: we want to insert
+        :notice: insert the the query to the to_commit dict, DOESN'T COMMIT IT
         """
         if self.lock_taken[s_id][p_id][0] != 'write':
             self.my_error = "Tried to write with out lock"
@@ -271,8 +275,7 @@ class Thread_with_exception(threading.Thread):
         :param s_id:
         :param p_id:
         :param values:
-        :return:
-        :notice: execute the the query to the right connection, DOSEN'T COMMIT IT
+        :notice: insert the the query to the to_commit dict, DOESN'T COMMIT IT
         """
         if self.lock_taken[s_id][p_id][0] != 'write':
             self.my_error = "Tried to write with out lock"
@@ -289,8 +292,7 @@ class Thread_with_exception(threading.Thread):
         :param s_id:
         :param p_id:
         :param quantity:
-        :return:
-        notice: execute update query to the right connection, DOSEN'T COMMIT IT
+        :notice: insert the the query to the to_commit dict, DOESN'T COMMIT IT
         """
         if self.lock_taken[s_id][p_id][0] != 'write':
             self.my_error = "Tried to write without lock"
@@ -311,8 +313,8 @@ class Thread_with_exception(threading.Thread):
 
     def undo(self):
         """
-        delete (and return ProductsInventory to the state before transaction)
-         the  all the history of the the transaction from the tables.
+        delete (and return ProductsInventory table to the state before transaction)
+        the whole  history of the the transaction from the tables.
         """
         for s_id in self.conn.keys():
             self.conn[s_id][1].execute(f"delete from ProductsOrdered where "
@@ -377,6 +379,9 @@ class Thread_with_exception(threading.Thread):
                 return id
 
     def raise_exception(self):
+        """
+        :return: raise exception
+        """
         thread_id = self.get_id()
         self.timeout = True
         res = ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id,
@@ -386,6 +391,9 @@ class Thread_with_exception(threading.Thread):
             print('Exception raise failure')
 
     def insert_first_time(self):
+        """
+        insert the inventory for the first time.
+        """
         my_product = [(1, 52)]
         for i in range(2, 13):
             my_product.append((i, 48))
@@ -492,7 +500,7 @@ def manage_transactions(t):
             print(transactionID, p.my_error)
         else:
             print(transactionID, "succeed")
-        # make sure all the locks are released
+        # make sure all the locks are released (just to be safe)
         p.release_all_lock()
     # close all connection
     conn.close_connection()

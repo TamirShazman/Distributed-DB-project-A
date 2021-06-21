@@ -393,9 +393,16 @@ class Thread_with_exception(threading.Thread):
         insert the inventory for the first time.
         """
         my_product = [(1, 52)]
+        log = []
+        log.append((f'{datetime.datetime.now().strftime(self.f)}', 'ProductsInventory', f'{self.transactionID}',
+                    1, 'write', f'insert into ProductsInventory values ({1}, {52})'))
         for i in range(2, 13):
             my_product.append((i, 48))
+            log.append((f'{datetime.datetime.now().strftime(self.f)}', 'ProductsInventory', f'{self.transactionID}',
+                        i, 'write', f'insert into ProductsInventory values ({i}, {48})'))
         self.conn[X][1].executemany("insert into ProductsInventory values (?, ?)", my_product)
+        self.conn[X][0].commit()
+        self.conn[X][1].executemany("insert into Log values (?, ?, ?, ?, ?)", log)
         self.conn[X][0].commit()
 
 

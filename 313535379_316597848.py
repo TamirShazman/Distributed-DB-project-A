@@ -154,9 +154,7 @@ class Thread_with_exception(threading.Thread):
         """
         :param s_id:
         :param p_id:
-        :return: True if it mange to update the lock from read to write, False if it didnt
-        :notice that when lock transaction is execute they always committed in the same function as normal transaction
-        are not
+        :return: True if it manged to update the lock from read to write, False if it didnt
         """
         # check if lock is free
         sql = f"select * from Locks where productID = {p_id} and transactionID != '{str(self.transactionID)}' "
